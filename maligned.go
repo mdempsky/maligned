@@ -32,24 +32,24 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var c collector
+	var v visitor
 	for _, pkg := range prog.InitialPackages() {
-		c.pkg = pkg
+		v.pkg = pkg
 		for _, file := range pkg.Files {
-			ast.Walk(&c, file)
+			ast.Walk(&v, file)
 		}
 	}
 }
 
-type collector struct {
+type visitor struct {
 	pkg *loader.PackageInfo
 }
 
-func (c *collector) Visit(node ast.Node) ast.Visitor {
+func (v *visitor) Visit(node ast.Node) ast.Visitor {
 	if str, ok := node.(*ast.StructType); ok {
-		malign(node.Pos(), c.pkg.Types[str].Type.(*types.Struct))
+		malign(node.Pos(), v.pkg.Types[str].Type.(*types.Struct))
 	}
-	return c
+	return v
 }
 
 func malign(pos token.Pos, str *types.Struct) {
@@ -65,7 +65,7 @@ func malign(pos token.Pos, str *types.Struct) {
 	s := gcSizes{wordSize, maxAlign}
 	sz, opt := s.Sizeof(str), optimalSize(str, &s)
 	if sz != opt {
-		fmt.Println(fset.Position(pos), "->", s.Sizeof(str), "!=", opt)
+		fmt.Printf("%s: struct of size %d could be %d\n", fset.Position(pos), sz, opt)
 	}
 }
 
