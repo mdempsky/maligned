@@ -10,11 +10,11 @@ import (
 	"go/ast"
 	"go/build"
 	"go/token"
+	"go/types"
 	"log"
 	"sort"
 
 	"golang.org/x/tools/go/loader"
-	"golang.org/x/tools/go/types"
 )
 
 var fset = token.NewFileSet()
