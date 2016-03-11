@@ -12,6 +12,7 @@ import (
 	"go/token"
 	"log"
 	"sort"
+	"unsafe"
 
 	"golang.org/x/tools/go/loader"
 	"golang.org/x/tools/go/types"
@@ -160,20 +161,23 @@ func (s *gcSizes) Alignof(T types.Type) int64 {
 	return a
 }
 
-var basicSizes = [...]byte{
-	types.Bool:       1,
-	types.Int8:       1,
-	types.Int16:      2,
-	types.Int32:      4,
-	types.Int64:      8,
-	types.Uint8:      1,
-	types.Uint16:     2,
-	types.Uint32:     4,
-	types.Uint64:     8,
-	types.Float32:    4,
-	types.Float64:    8,
-	types.Complex64:  8,
-	types.Complex128: 16,
+var basicSizes = [...]uintptr{
+	types.Bool:       unsafe.Sizeof(false),
+	types.Int:        unsafe.Sizeof(int(0)),
+	types.Int8:       unsafe.Sizeof(int8(0)),
+	types.Int16:      unsafe.Sizeof(int16(0)),
+	types.Int32:      unsafe.Sizeof(int32(0)),
+	types.Int64:      unsafe.Sizeof(int64(0)),
+	types.Uint:       unsafe.Sizeof(uint(0)),
+	types.Uint8:      unsafe.Sizeof(uint8(0)),
+	types.Uint16:     unsafe.Sizeof(uint16(0)),
+	types.Uint32:     unsafe.Sizeof(uint32(0)),
+	types.Uint64:     unsafe.Sizeof(uint64(0)),
+	types.Uintptr:    unsafe.Sizeof(uintptr(0)),
+	types.Float32:    unsafe.Sizeof(float32(0)),
+	types.Float64:    unsafe.Sizeof(float64(0)),
+	types.Complex64:  unsafe.Sizeof(complex64(0)),
+	types.Complex128: unsafe.Sizeof(complex128(0)),
 }
 
 func (s *gcSizes) Sizeof(T types.Type) int64 {
