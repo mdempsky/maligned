@@ -14,6 +14,7 @@ import (
 	"log"
 	"sort"
 
+	"github.com/kisielk/gotool"
 	"golang.org/x/tools/go/loader"
 )
 
@@ -22,10 +23,15 @@ var fset = token.NewFileSet()
 func main() {
 	flag.Parse()
 
+	importPaths := gotool.ImportPaths(flag.Args())
+	if len(importPaths) == 0 {
+		return
+	}
+
 	var conf loader.Config
 	conf.Fset = fset
-	for _, arg := range flag.Args() {
-		conf.Import(arg)
+	for _, importPath := range importPaths {
+		conf.Import(importPath)
 	}
 	prog, err := conf.Load()
 	if err != nil {
