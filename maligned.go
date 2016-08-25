@@ -38,24 +38,16 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var v visitor
 	for _, pkg := range prog.InitialPackages() {
-		v.pkg = pkg
 		for _, file := range pkg.Files {
-			ast.Walk(&v, file)
+			ast.Inspect(file, func(node ast.Node) bool {
+				if s, ok := node.(*ast.StructType); ok {
+					malign(node.Pos(), pkg.Types[s].Type.(*types.Struct))
+				}
+				return true
+			})
 		}
 	}
-}
-
-type visitor struct {
-	pkg *loader.PackageInfo
-}
-
-func (v *visitor) Visit(node ast.Node) ast.Visitor {
-	if str, ok := node.(*ast.StructType); ok {
-		malign(node.Pos(), v.pkg.Types[str].Type.(*types.Struct))
-	}
-	return v
 }
 
 func malign(pos token.Pos, str *types.Struct) {
