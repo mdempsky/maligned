@@ -13,6 +13,7 @@ import (
 	"go/types"
 	"log"
 	"sort"
+	"strings"
 
 	"github.com/kisielk/gotool"
 	"golang.org/x/tools/go/loader"
@@ -21,6 +22,7 @@ import (
 var fset = token.NewFileSet()
 
 func main() {
+	flagVerbose := flag.Bool("v", false, "verbose: print field order suggestions")
 	flag.Parse()
 
 	importPaths := gotool.ImportPaths(flag.Args())
@@ -42,7 +44,7 @@ func main() {
 		for _, file := range pkg.Files {
 			ast.Inspect(file, func(node ast.Node) bool {
 				if s, ok := node.(*ast.StructType); ok {
-					malign(node.Pos(), pkg.Types[s].Type.(*types.Struct))
+					malign(node.Pos(), pkg.Types[s].Type.(*types.Struct), *flagVerbose)
 				}
 				return true
 			})
@@ -50,7 +52,7 @@ func main() {
 	}
 }
 
-func malign(pos token.Pos, str *types.Struct) {
+func malign(pos token.Pos, str *types.Struct, verbose bool) {
 	wordSize := int64(8)
 	maxAlign := int64(8)
 	switch build.Default.GOARCH {
@@ -61,13 +63,30 @@ func malign(pos token.Pos, str *types.Struct) {
 	}
 
 	s := gcSizes{wordSize, maxAlign}
-	sz, opt := s.Sizeof(str), optimalSize(str, &s)
-	if sz != opt {
-		fmt.Printf("%s: struct of size %d could be %d\n", fset.Position(pos), sz, opt)
+	sz := s.Sizeof(str)
+	opt, fields := optimalSize(str, &s, verbose)
+	if sz == opt {
+		return
 	}
+	if !verbose {
+		fmt.Printf("%s: struct of size %d could be %d\n", fset.Position(pos), sz, opt)
+		return
+	}
+	fmt.Printf("%s: struct of size %d could be %d with struct{\n", fset.Position(pos), sz, opt)
+	var w int
+	for _, f := range fields {
+		if n := len(f.Name()); n > w {
+			w = n
+		}
+	}
+	spaces := strings.Repeat(" ", w)
+	for _, f := range fields {
+		fmt.Printf("\t%s%s\t%s,\n", f.Name(), spaces[len(f.Name()):], f.Type().String())
+	}
+	fmt.Println("}")
 }
 
-func optimalSize(str *types.Struct, sizes *gcSizes) int64 {
+func optimalSize(str *types.Struct, sizes *gcSizes, stable bool) (int64, []*types.Var) {
 	nf := str.NumFields()
 	fields := make([]*types.Var, nf)
 	alignofs := make([]int64, nf)
@@ -78,8 +97,12 @@ func optimalSize(str *types.Struct, sizes *gcSizes) int64 {
 		alignofs[i] = sizes.Alignof(ft)
 		sizeofs[i] = sizes.Sizeof(ft)
 	}
-	sort.Sort(&byAlignAndSize{fields, alignofs, sizeofs})
-	return sizes.Sizeof(types.NewStruct(fields, nil))
+	if stable { // Stable keeps as much of the order as possible, but slower
+		sort.Stable(&byAlignAndSize{fields, alignofs, sizeofs})
+	} else {
+		sort.Sort(&byAlignAndSize{fields, alignofs, sizeofs})
+	}
+	return sizes.Sizeof(types.NewStruct(fields, nil)), fields
 }
 
 type byAlignAndSize struct {
