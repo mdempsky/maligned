@@ -29,6 +29,7 @@ func main() {
 	}
 
 	var conf loader.Config
+	conf.TypeChecker.Sizes = types.SizesFor(build.Default.Compiler, build.Default.GOARCH)
 	conf.Fset = fset
 	for _, importPath := range importPaths {
 		conf.Import(importPath)
