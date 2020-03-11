@@ -19,6 +19,7 @@ import (
 )
 
 var fset = token.NewFileSet()
+var verbose = flag.Bool("v", false, "Show size of each field")
 
 func main() {
 	flag.Parse()
@@ -65,6 +66,16 @@ func malign(pos token.Pos, str *types.Struct) {
 	sz, opt := s.Sizeof(str), optimalSize(str, &s)
 	if sz != opt {
 		fmt.Printf("%s: struct of size %d could be %d\n", fset.Position(pos), sz, opt)
+		if *verbose {
+			fmt.Println("Field sizes in order:")
+			for _, f:= range s.Sizesof(str) {
+				if f.aligned != f.native {
+					fmt.Println("\t!!! ", f)
+				} else  {
+					fmt.Println("\t* ", f)
+				}
+			}
+		}
 	}
 }
 
@@ -221,6 +232,44 @@ func (s *gcSizes) Sizeof(T types.Type) int64 {
 		return s.WordSize * 2
 	}
 	return s.WordSize // catch-all
+}
+
+type fieldSize struct {
+	name string
+	native, aligned int64
+}
+
+func (fs fieldSize) String() string {
+	return fmt.Sprintf("%s: %d:%d", fs.name, fs.native, fs.aligned)
+}
+
+func (s *gcSizes) Sizesof(T types.Type) []fieldSize {
+	switch t := T.Underlying().(type) {
+	case *types.Struct:
+		nf := t.NumFields()
+		if nf == 0 {
+			return nil
+		}
+		var dst []fieldSize
+		var o int64
+		max := int64(1)
+		for i := 0; i < nf; i++ {
+			ft := t.Field(i).Type()
+			a, sz := s.Alignof(ft), s.Sizeof(ft)
+			if a > max {
+				max = a
+			}
+			if i == nf-1 && sz == 0 && o != 0 {
+				sz = 1
+			}
+			op := o
+			o = align(o, a) + sz
+			fld := t.Field(i)
+			dst = append(dst, fieldSize{native: sz, aligned:o-op, name:fld.Name()+" "+fld.Type().String()})
+		}
+		return dst
+	}
+	return nil
 }
 
 // align returns the smallest y >= x such that y % a == 0.
