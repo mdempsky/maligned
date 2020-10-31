@@ -6,52 +6,46 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"go/ast"
 	"go/build"
 	"go/token"
 	"go/types"
-	"log"
 	"sort"
 
-	"github.com/kisielk/gotool"
-	"golang.org/x/tools/go/loader"
+	"golang.org/x/tools/go/analysis"
+	"golang.org/x/tools/go/analysis/passes/inspect"
+	"golang.org/x/tools/go/analysis/singlechecker"
+	"golang.org/x/tools/go/ast/inspector"
 )
 
-var fset = token.NewFileSet()
+const Doc = "TODO"
+
+var Analyzer = &analysis.Analyzer{
+	Name:     "maligned",
+	Doc:      Doc,
+	Requires: []*analysis.Analyzer{inspect.Analyzer},
+	Run:      run,
+}
+
+func run(pass *analysis.Pass) (interface{}, error) {
+	inspect := pass.ResultOf[inspect.Analyzer].(*inspector.Inspector)
+	nodeFilter := []ast.Node{
+		(*ast.StructType)(nil),
+	}
+	inspect.Preorder(nodeFilter, func(node ast.Node) {
+		if s, ok := node.(*ast.StructType); ok {
+			malign(pass, node.Pos(), pass.TypesInfo.Types[s].Type.(*types.Struct))
+		}
+	})
+	return nil, nil
+}
 
 func main() {
 	flag.Parse()
-
-	importPaths := gotool.ImportPaths(flag.Args())
-	if len(importPaths) == 0 {
-		return
-	}
-
-	var conf loader.Config
-	conf.TypeChecker.Sizes = types.SizesFor(build.Default.Compiler, build.Default.GOARCH)
-	conf.Fset = fset
-	for _, importPath := range importPaths {
-		conf.Import(importPath)
-	}
-	prog, err := conf.Load()
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	for _, pkg := range prog.InitialPackages() {
-		for _, file := range pkg.Files {
-			ast.Inspect(file, func(node ast.Node) bool {
-				if s, ok := node.(*ast.StructType); ok {
-					malign(node.Pos(), pkg.Types[s].Type.(*types.Struct))
-				}
-				return true
-			})
-		}
-	}
+	singlechecker.Main(Analyzer)
 }
 
-func malign(pos token.Pos, str *types.Struct) {
+func malign(pass *analysis.Pass, pos token.Pos, str *types.Struct) {
 	wordSize := int64(8)
 	maxAlign := int64(8)
 	switch build.Default.GOARCH {
@@ -64,7 +58,7 @@ func malign(pos token.Pos, str *types.Struct) {
 	s := gcSizes{wordSize, maxAlign}
 	sz, opt := s.Sizeof(str), optimalSize(str, &s)
 	if sz != opt {
-		fmt.Printf("%s: struct of size %d could be %d\n", fset.Position(pos), sz, opt)
+		pass.Reportf(pos, "struct of size %d could be %d", sz, opt)
 	}
 }
 
