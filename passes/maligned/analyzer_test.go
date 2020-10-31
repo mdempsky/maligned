@@ -1,9 +1,9 @@
-package main_test
+package maligned_test
 
 import (
 	"testing"
 
-	maligned "github.com/mdempsky/maligned"
+	"github.com/mdempsky/maligned/passes/maligned"
 	"golang.org/x/tools/go/analysis/analysistest"
 )
 
