@@ -7,7 +7,6 @@ package main
 import (
 	"flag"
 	"go/ast"
-	"go/build"
 	"go/token"
 	"go/types"
 	"sort"
@@ -45,15 +44,11 @@ func main() {
 	singlechecker.Main(Analyzer)
 }
 
+var unsafePointerTyp = types.Unsafe.Scope().Lookup("Pointer").(*types.TypeName).Type()
+
 func malign(pass *analysis.Pass, pos token.Pos, str *types.Struct) {
-	wordSize := int64(8)
-	maxAlign := int64(8)
-	switch build.Default.GOARCH {
-	case "386", "arm":
-		wordSize, maxAlign = 4, 4
-	case "amd64p32":
-		wordSize = 4
-	}
+	wordSize := pass.TypesSizes.Sizeof(unsafePointerTyp)
+	maxAlign := pass.TypesSizes.Alignof(unsafePointerTyp)
 
 	s := gcSizes{wordSize, maxAlign}
 	sz, opt := s.Sizeof(str), optimalSize(str, &s)
