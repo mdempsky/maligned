@@ -51,60 +51,91 @@ func malign(pass *analysis.Pass, pos token.Pos, str *types.Struct) {
 	maxAlign := pass.TypesSizes.Alignof(unsafePointerTyp)
 
 	s := gcSizes{wordSize, maxAlign}
-	sz, opt := s.Sizeof(str), optimalSize(str, &s)
-	if sz != opt {
-		pass.Reportf(pos, "struct of size %d could be %d", sz, opt)
+	optsz, optptrs := optimalOrder(str, &s)
+
+	if sz := s.Sizeof(str); sz != optsz {
+		pass.Reportf(pos, "struct of size %d could be %d", sz, optsz)
+	}
+	if ptrs := s.ptrdata(str); ptrs != optptrs {
+		pass.Reportf(pos, "struct with %d pointer bytes could be %d", ptrs, optptrs)
 	}
 }
 
-func optimalSize(str *types.Struct, sizes *gcSizes) int64 {
+func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
 	nf := str.NumFields()
-	fields := make([]*types.Var, nf)
-	alignofs := make([]int64, nf)
-	sizeofs := make([]int64, nf)
+
+	type elem struct {
+		field   *types.Var
+		alignof int64
+		sizeof  int64
+		ptrdata int64
+	}
+
+	elems := make([]elem, nf)
 	for i := 0; i < nf; i++ {
-		fields[i] = str.Field(i)
-		ft := fields[i].Type()
-		alignofs[i] = sizes.Alignof(ft)
-		sizeofs[i] = sizes.Sizeof(ft)
+		field := str.Field(i)
+		ft := field.Type()
+		elems[i] = elem{
+			field,
+			sizes.Alignof(ft),
+			sizes.Sizeof(ft),
+			sizes.ptrdata(ft),
+		}
 	}
-	sort.Sort(&byAlignAndSize{fields, alignofs, sizeofs})
-	return sizes.Sizeof(types.NewStruct(fields, nil))
-}
 
-type byAlignAndSize struct {
-	fields   []*types.Var
-	alignofs []int64
-	sizeofs  []int64
-}
+	sort.Slice(elems, func(i, j int) bool {
+		ei := &elems[i]
+		ej := &elems[j]
 
-func (s *byAlignAndSize) Len() int { return len(s.fields) }
-func (s *byAlignAndSize) Swap(i, j int) {
-	s.fields[i], s.fields[j] = s.fields[j], s.fields[i]
-	s.alignofs[i], s.alignofs[j] = s.alignofs[j], s.alignofs[i]
-	s.sizeofs[i], s.sizeofs[j] = s.sizeofs[j], s.sizeofs[i]
-}
+		// Place zero sized objects before non-zero sized objects.
+		zeroi := ei.sizeof == 0
+		zeroj := ej.sizeof == 0
+		if zeroi != zeroj {
+			return zeroi
+		}
 
-func (s *byAlignAndSize) Less(i, j int) bool {
-	// Place zero sized objects before non-zero sized objects.
-	if s.sizeofs[i] == 0 && s.sizeofs[j] != 0 {
-		return true
-	}
-	if s.sizeofs[j] == 0 && s.sizeofs[i] != 0 {
+		// Next, place more tightly aligned objects before less tightly aligned objects.
+		if ei.alignof != ej.alignof {
+			return ei.alignof > ej.alignof
+		}
+
+		// Place pointerful objects before pointer-free objects.
+		noptrsi := ei.ptrdata == 0
+		noptrsj := ej.ptrdata == 0
+		if noptrsi != noptrsj {
+			return noptrsj
+		}
+
+		if !noptrsi {
+			// If both have pointers...
+
+			// ... then place objects with less trailing
+			// non-pointer bytes earlier. That is, place
+			// the field with the most trailing
+			// non-pointer bytes at the end of the
+			// pointerful section.
+			traili := ei.sizeof - ei.ptrdata
+			trailj := ej.sizeof - ej.ptrdata
+			if traili != trailj {
+				return traili < trailj
+			}
+		}
+
+		// Lastly, order by size.
+		if ei.sizeof != ej.sizeof {
+			return ei.sizeof > ej.sizeof
+		}
+
 		return false
-	}
+	})
 
-	// Next, place more tightly aligned objects before less tightly aligned objects.
-	if s.alignofs[i] != s.alignofs[j] {
-		return s.alignofs[i] > s.alignofs[j]
+	var fields []*types.Var
+	for _, e := range elems {
+		fields = append(fields, e.field)
 	}
+	optimal := types.NewStruct(fields, nil)
 
-	// Lastly, order by size.
-	if s.sizeofs[i] != s.sizeofs[j] {
-		return s.sizeofs[i] > s.sizeofs[j]
-	}
-
-	return false
+	return sizes.Sizeof(optimal), sizes.ptrdata(optimal)
 }
 
 // Code below based on go/types.StdSizes.
@@ -177,13 +208,7 @@ func (s *gcSizes) Sizeof(T types.Type) int64 {
 			return s.WordSize * 2
 		}
 	case *types.Array:
-		n := t.Len()
-		if n == 0 {
-			return 0
-		}
-		a := s.Alignof(t.Elem())
-		z := s.Sizeof(t.Elem())
-		return align(z, a)*(n-1) + z
+		return t.Len() * s.Sizeof(t.Elem())
 	case *types.Slice:
 		return s.WordSize * 3
 	case *types.Struct:
@@ -216,4 +241,58 @@ func (s *gcSizes) Sizeof(T types.Type) int64 {
 func align(x, a int64) int64 {
 	y := x + a - 1
 	return y - y%a
+}
+
+func (s *gcSizes) ptrdata(T types.Type) int64 {
+	switch t := T.Underlying().(type) {
+	case *types.Basic:
+		switch t.Kind() {
+		case types.String, types.UnsafePointer:
+			return s.WordSize
+		}
+		return 0
+	case *types.Chan, *types.Map, *types.Pointer, *types.Signature, *types.Slice:
+		return s.WordSize
+	case *types.Interface:
+		return 2 * s.WordSize
+	case *types.Array:
+		n := t.Len()
+		if n == 0 {
+			return 0
+		}
+		a := s.ptrdata(t.Elem())
+		if a == 0 {
+			return 0
+		}
+		z := s.Sizeof(t.Elem())
+		return (n-1)*z + a
+	case *types.Struct:
+		nf := t.NumFields()
+		if nf == 0 {
+			return 0
+		}
+
+		var o, p int64
+		max := int64(1)
+		for i := 0; i < nf; i++ {
+			ft := t.Field(i).Type()
+			a, sz := s.Alignof(ft), s.Sizeof(ft)
+			fp := s.ptrdata(ft)
+			if a > max {
+				max = a
+			}
+			if i == nf-1 && sz == 0 && o != 0 {
+				sz = 1
+			}
+			o = align(o, a)
+			if fp != 0 {
+				p = o + fp
+			}
+			o += sz
+		}
+		return p
+	}
+
+	panic("impossible")
+	return 0
 }
