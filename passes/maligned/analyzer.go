@@ -40,17 +40,17 @@ func malign(pass *analysis.Pass, pos token.Pos, str *types.Struct) {
 	maxAlign := pass.TypesSizes.Alignof(unsafePointerTyp)
 
 	s := gcSizes{wordSize, maxAlign}
-	optsz, optptrs := optimalOrder(str, &s)
+	fieldNames, optsz, optptrs := optimalOrder(str, &s)
 
 	if sz := s.Sizeof(str); sz != optsz {
-		pass.Reportf(pos, "struct of size %d could be %d", sz, optsz)
+		pass.Reportf(pos, "struct of size %d could be %d: %v", sz, optsz, fieldNames)
 	}
 	if ptrs := s.ptrdata(str); ptrs != optptrs {
-		pass.Reportf(pos, "struct with %d pointer bytes could be %d", ptrs, optptrs)
+		pass.Reportf(pos, "struct with %d pointer bytes could be %d: %v", ptrs, optptrs, fieldNames)
 	}
 }
 
-func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
+func optimalOrder(str *types.Struct, sizes *gcSizes) ([]string, int64, int64) {
 	nf := str.NumFields()
 
 	type elem struct {
@@ -118,13 +118,15 @@ func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
 		return false
 	})
 
-	var fields []*types.Var
-	for _, e := range elems {
-		fields = append(fields, e.field)
+	fields := make([]*types.Var, len(elems))
+	fieldNames := make([]string, len(elems))
+	for i, e := range elems {
+		fields[i] = e.field
+		fieldNames[i] = e.field.Name()
 	}
 	optimal := types.NewStruct(fields, nil)
 
-	return sizes.Sizeof(optimal), sizes.ptrdata(optimal)
+	return fieldNames, sizes.Sizeof(optimal), sizes.ptrdata(optimal)
 }
 
 // Code below based on go/types.StdSizes.
