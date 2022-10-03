@@ -1,8 +1,10 @@
-module github.com/mdempsky/maligned
+module github.com/vyeve/go-struct-optimize
 
-go 1.15
+go 1.18
+
+require golang.org/x/tools v0.1.12
 
 require (
-	golang.org/x/sys v0.0.0-20220128215802-99c3d69c2c27 // indirect
-	golang.org/x/tools v0.1.9
+	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
+	golang.org/x/sys v0.0.0-20220722155257-8c9f86f7a55f // indirect
 )

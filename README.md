@@ -1,9 +1,17 @@
-**Deprecated:** Use https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/fieldalignment instead.
+# Go struct optimize
 
-Install:
+This is fork from [fieldalignment](https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/fieldalignment).
 
-    go get github.com/mdempsky/maligned
+Script prints to `os.Stdout` optimal structure order.
 
-Usage:
+## Installation
 
-    maligned cmd/compile/internal/gc cmd/link/internal/ld
+```shell
+    go install github.com/vyeve/go-struct-optimize
+```
+
+## Usage
+
+```shell
+    go-struct-optimize .
+```

@@ -1,7 +1,16 @@
-package maligned
+// Copyright 2020 The Go Authors. All rights reserved.
+// Use of this source code is governed by a BSD-style
+// license that can be found in the LICENSE file.
+
+// Package fieldalignment defines an Analyzer that detects structs that would use less
+// memory if their fields were sorted.
+package fieldalignment
 
 import (
+	"bytes"
+	"fmt"
 	"go/ast"
+	"go/format"
 	"go/token"
 	"go/types"
 	"sort"
@@ -11,10 +20,36 @@ import (
 	"golang.org/x/tools/go/ast/inspector"
 )
 
-const Doc = "TODO"
+const Doc = `find structs that would use less memory if their fields were sorted
+
+This analyzer find structs that can be rearranged to use less memory, and provides
+a suggested edit with the most compact order.
+
+Note that there are two different diagnostics reported. One checks struct size,
+and the other reports "pointer bytes" used. Pointer bytes is how many bytes of the
+object that the garbage collector has to potentially scan for pointers, for example:
+
+	struct { uint32; string }
+
+have 16 pointer bytes because the garbage collector has to scan up through the string's
+inner pointer.
+
+	struct { string; *uint32 }
+
+has 24 pointer bytes because it has to scan further through the *uint32.
+
+	struct { string; uint32 }
+
+has 8 because it can stop immediately after the string pointer.
+
+Be aware that the most compact order is not always the most efficient.
+In rare cases it may cause two variables each updated by its own goroutine
+to occupy the same CPU cache line, inducing a form of memory contention
+known as "false sharing" that slows down both goroutines.
+`
 
 var Analyzer = &analysis.Analyzer{
-	Name:     "maligned",
+	Name:     "fieldalignment",
 	Doc:      Doc,
 	Requires: []*analysis.Analyzer{inspect.Analyzer},
 	Run:      run,
@@ -26,8 +61,13 @@ func run(pass *analysis.Pass) (interface{}, error) {
 		(*ast.StructType)(nil),
 	}
 	inspect.Preorder(nodeFilter, func(node ast.Node) {
-		if s, ok := node.(*ast.StructType); ok {
-			malign(pass, node.Pos(), pass.TypesInfo.Types[s].Type.(*types.Struct))
+		var s *ast.StructType
+		var ok bool
+		if s, ok = node.(*ast.StructType); !ok {
+			return
+		}
+		if tv, ok := pass.TypesInfo.Types[s]; ok {
+			fieldalignment(pass, s, tv.Type.(*types.Struct))
 		}
 	})
 	return nil, nil
@@ -35,26 +75,84 @@ func run(pass *analysis.Pass) (interface{}, error) {
 
 var unsafePointerTyp = types.Unsafe.Scope().Lookup("Pointer").(*types.TypeName).Type()
 
-func malign(pass *analysis.Pass, pos token.Pos, str *types.Struct) {
+func fieldalignment(pass *analysis.Pass, node *ast.StructType, typ *types.Struct) {
 	wordSize := pass.TypesSizes.Sizeof(unsafePointerTyp)
 	maxAlign := pass.TypesSizes.Alignof(unsafePointerTyp)
 
 	s := gcSizes{wordSize, maxAlign}
-	optsz, optptrs := optimalOrder(str, &s)
+	optimal, indexes := optimalOrder(typ, &s)
+	optsz, optptrs := s.Sizeof(optimal), s.ptrdata(optimal)
 
-	if sz := s.Sizeof(str); sz != optsz {
-		pass.Reportf(pos, "struct of size %d could be %d", sz, optsz)
+	var message string
+	if sz := s.Sizeof(typ); sz != optsz {
+		message = fmt.Sprintf("struct of size %d could be %d", sz, optsz)
+	} else if ptrs := s.ptrdata(typ); ptrs != optptrs {
+		message = fmt.Sprintf("struct with %d pointer bytes could be %d", ptrs, optptrs)
+	} else {
+		// Already optimal order.
+		return
 	}
-	if ptrs := s.ptrdata(str); ptrs != optptrs {
-		pass.Reportf(pos, "struct with %d pointer bytes could be %d", ptrs, optptrs)
+
+	// Flatten the ast node since it could have multiple field names per list item while
+	// *types.Struct only have one item per field.
+	// TODO: Preserve multi-named fields instead of flattening.
+	var flat []*ast.Field
+	for _, f := range node.Fields.List {
+		// TODO: Preserve comment, for now get rid of them.
+		//       See https://github.com/golang/go/issues/20744
+		f.Comment = nil
+		f.Doc = nil
+		if len(f.Names) <= 1 {
+			flat = append(flat, f)
+			continue
+		}
+		for _, name := range f.Names {
+			flat = append(flat, &ast.Field{
+				Names: []*ast.Ident{name},
+				Type:  f.Type,
+			})
+		}
 	}
+
+	// Sort fields according to the optimal order.
+	var reordered []*ast.Field
+	for _, index := range indexes {
+		reordered = append(reordered, flat[index])
+	}
+
+	newStr := &ast.StructType{
+		Fields: &ast.FieldList{
+			List: reordered,
+		},
+	}
+
+	// Write the newly aligned struct node to get the content for suggested fixes.
+	var buf bytes.Buffer
+	if err := format.Node(&buf, token.NewFileSet(), newStr); err != nil {
+		return
+	}
+
+	pass.Report(analysis.Diagnostic{
+		Pos:     node.Pos(),
+		End:     node.Pos() + token.Pos(len("struct")),
+		Message: printOptimal(message, optimal),
+		SuggestedFixes: []analysis.SuggestedFix{{
+			Message: "Rearrange fields",
+			TextEdits: []analysis.TextEdit{{
+				Pos:     node.Pos(),
+				End:     node.End(),
+				NewText: buf.Bytes(),
+			}},
+		}},
+	})
+
 }
 
-func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
+func optimalOrder(str *types.Struct, sizes *gcSizes) (*types.Struct, []int) {
 	nf := str.NumFields()
 
 	type elem struct {
-		field   *types.Var
+		index   int
 		alignof int64
 		sizeof  int64
 		ptrdata int64
@@ -65,14 +163,14 @@ func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
 		field := str.Field(i)
 		ft := field.Type()
 		elems[i] = elem{
-			field,
+			i,
 			sizes.Alignof(ft),
 			sizes.Sizeof(ft),
 			sizes.ptrdata(ft),
 		}
 	}
 
-	sort.Slice(elems, func(i, j int) bool {
+	sort.SliceStable(elems, func(i, j int) bool {
 		ei := &elems[i]
 		ej := &elems[j]
 
@@ -118,13 +216,13 @@ func optimalOrder(str *types.Struct, sizes *gcSizes) (int64, int64) {
 		return false
 	})
 
-	var fields []*types.Var
-	for _, e := range elems {
-		fields = append(fields, e.field)
+	fields := make([]*types.Var, nf)
+	indexes := make([]int, nf)
+	for i, e := range elems {
+		fields[i] = str.Field(e.index)
+		indexes[i] = e.index
 	}
-	optimal := types.NewStruct(fields, nil)
-
-	return sizes.Sizeof(optimal), sizes.ptrdata(optimal)
+	return types.NewStruct(fields, nil), indexes
 }
 
 // Code below based on go/types.StdSizes.
@@ -135,9 +233,6 @@ type gcSizes struct {
 }
 
 func (s *gcSizes) Alignof(T types.Type) int64 {
-	// NOTE: On amd64, complex64 is 8 byte aligned,
-	// even though float32 is only 4 byte aligned.
-
 	// For arrays and structs, alignment is defined in terms
 	// of alignment of the elements and fields, respectively.
 	switch t := T.Underlying().(type) {
@@ -262,17 +357,10 @@ func (s *gcSizes) ptrdata(T types.Type) int64 {
 		}
 
 		var o, p int64
-		max := int64(1)
 		for i := 0; i < nf; i++ {
 			ft := t.Field(i).Type()
 			a, sz := s.Alignof(ft), s.Sizeof(ft)
 			fp := s.ptrdata(ft)
-			if a > max {
-				max = a
-			}
-			if i == nf-1 && sz == 0 && o != 0 {
-				sz = 1
-			}
 			o = align(o, a)
 			if fp != 0 {
 				p = o + fp
@@ -283,5 +371,15 @@ func (s *gcSizes) ptrdata(T types.Type) int64 {
 	}
 
 	panic("impossible")
-	return 0
+}
+
+func printOptimal(msg string, str *types.Struct) string {
+	var buf bytes.Buffer
+	buf.WriteString(msg)
+	buf.WriteString("\n========================== \033[32mOptimal order:\033[0m ==========================\n")
+	for i := 0; i < str.NumFields(); i++ {
+		buf.WriteString(fmt.Sprintf("\033[33m%2d\033[34m\t%s\033[0m\n", i, str.Field(i).Name()))
+	}
+	buf.WriteString("====================================================================\n")
+	return buf.String()
 }

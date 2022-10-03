@@ -7,11 +7,11 @@ package main
 import (
 	"flag"
 
-	"github.com/mdempsky/maligned/passes/maligned"
+	"github.com/vyeve/go-struct-optimize/fieldalignment"
 	"golang.org/x/tools/go/analysis/singlechecker"
 )
 
 func main() {
 	flag.Parse()
-	singlechecker.Main(maligned.Analyzer)
+	singlechecker.Main(fieldalignment.Analyzer)
 }
