@@ -13,5 +13,5 @@ Script prints to `os.Stdout` optimal structure order.
 ## Usage
 
 ```shell
-    go-struct-optimize .
+    go-struct-optimize ./...
 ```
